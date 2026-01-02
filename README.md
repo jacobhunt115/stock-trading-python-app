@@ -2,6 +2,9 @@
 
 A Python application that fetches stock data from the Polygon.io API and exports it to CSV format. This project demonstrates data pipeline concepts and can be used as a foundation for stock market data analysis and trading applications.
 
+### Notes
+I utilized Cursor, Python, SQL and Polygon/Rest APIs for this project, which worked well to pull 12,126 stock tickers into a snowflake warehouse -> table that I created.
+
 ##  Features
 
 - **API Integration**: Fetches real-time stock ticker data from Polygon.io
@@ -103,6 +106,8 @@ The modular design makes it easy to integrate with schedulers:
 # Run daily at 9 AM
 0 9 * * * cd /path/to/stock-trading-python-app && python script.py
 ```
+****Windows Users**
+-- I had to run commands in powershell admin to get a schedule setup in windows as CRON is MAC/Apple specific
 
 **Using Python scheduler:**
 ```python
@@ -124,9 +129,8 @@ stock-trading-python-app/
 ├── script.py              # Main application script
 ├── scheduler.py           # Scheduler utilities
 ├── requirements.txt       # Python dependencies
-├── .env.example          # Environment variables template
 ├── .gitignore            # Git ignore rules
-├── tickers.csv           # Generated CSV output (after running)
+├── stock_tickers.csv           # Generated CSV output (after running)
 └── README.md             # This file
 ```
 
