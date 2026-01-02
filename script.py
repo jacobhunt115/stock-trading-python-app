@@ -1,105 +1,101 @@
 import requests
 import os 
+import time
 import snowflake.connector
 from dotenv import load_dotenv
+
 load_dotenv()
 
+# Config
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
+SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
+SNOWFLAKE_USER = os.getenv("SNOWFLAKE_USER")
+SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")
+SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
+SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE")
+SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA")
+SNOWFLAKE_ROLE = os.getenv("SNOWFLAKE_ROLE")
 
-# Snowflake connection parameters
-POLYGON_API_KEY = "1H2tFMSVy1fDw8T_nWx6qTH_D8vFRF1Q"
-SNOWFLAKE_ACCOUNT = "REHNTRQ-OUB66781"
-SNOWFLAKE_USER = "HUNTJA1995"
-SNOWFLAKE_PASSWORD = "xucbiv-qonSyj-sawbo3"
-SNOWFLAKE_WAREHOUSE = "SNOWFLAKE_LEARNING_WAREHOUSE"
-SNOWFLAKE_DATABASE = "JACOBHUNT"
-SNOWFLAKE_SCHEMA = "public"
-SNOWFLAKE_ROLE = "accountadmin"
-LIMIT = 1000
+def run_stock_job():
+    print(f"--- Starting Data Fetch at {time.ctime()} ---")
+    url = f'https://api.polygon.io/v3/reference/tickers?market=stocks&active=true&limit=1000&apiKey={POLYGON_API_KEY}'
+    tickers = []
 
-url = f'https://api.massive.com/v3/reference/tickers?market=stocks&active=true&order=asc&limit={LIMIT}&sort=ticker&apiKey={POLYGON_API_KEY}'
-response = requests.get(url)
-tickers = []
+    while url:
+        response = requests.get(url)
+        if response.status_code == 429:
+            print("Rate limit hit. Waiting 60 seconds...")
+            time.sleep(60)
+            continue
+            
+        data = response.json()
+        if 'results' in data:
+            tickers.extend(data['results'])
+            print(f"Collected {len(tickers)} tickers...")
+        
+        next_url = data.get('next_url')
+        if next_url:
+            url = f"{next_url}&apiKey={POLYGON_API_KEY}"
+            time.sleep(12) # Essential for free tier
+        else:
+            url = None
 
-data = response.json()
-for ticker in data['results']:
-    tickers.append(ticker)
+    if tickers:
+        _save_to_snowflake(tickers)
 
-while 'next_url' in data:
-    print('requesting next page', data['next_url'])
-    response = requests.get(data['next_url'] + f'&apikey={POLYGON_API_KEY}')
-    data = response.json()
-    print(data)
-    for ticker in data['results']:
-        tickers.append(ticker)
+def _save_to_snowflake(ticker_data):
+    print("Connecting to Snowflake...")
+    conn = snowflake.connector.connect(
+        user=SNOWFLAKE_USER,
+        password=SNOWFLAKE_PASSWORD,
+        account=SNOWFLAKE_ACCOUNT,
+        warehouse=SNOWFLAKE_WAREHOUSE,
+        database=SNOWFLAKE_DATABASE,
+        schema=SNOWFLAKE_SCHEMA,
+        role=SNOWFLAKE_ROLE
+    )
+    cursor = conn.cursor()
 
-# Connect to Snowflake
-print('Connecting to Snowflake...')
-conn = snowflake.connector.connect(
-    user=SNOWFLAKE_USER,
-    password=SNOWFLAKE_PASSWORD,
-    account=SNOWFLAKE_ACCOUNT,
-    warehouse=SNOWFLAKE_WAREHOUSE,
-    database=SNOWFLAKE_DATABASE,
-    schema=SNOWFLAKE_SCHEMA
-)
+    # Fixing the 'No active warehouse' error
+    cursor.execute(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}")
+    cursor.execute(f"USE DATABASE {SNOWFLAKE_DATABASE}")
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tickers (
+        ticker VARCHAR(50),
+        name VARCHAR(500),
+        market VARCHAR(50),
+        locale VARCHAR(10),
+        primary_exchange VARCHAR(20),
+        type VARCHAR(20),
+        active BOOLEAN,
+        currency_name VARCHAR(10),
+        cik VARCHAR(20),
+        composite_figi VARCHAR(20),
+        share_class_figi VARCHAR(20),
+        last_updated_utc TIMESTAMP_NTZ,
+        inserted_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+    )
+    """)
 
-cursor = conn.cursor()
+    insert_sql = """
+    INSERT INTO tickers (ticker, name, market, locale, primary_exchange, type, active, currency_name, cik, composite_figi, share_class_figi, last_updated_utc)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
 
-# Create table if it doesn't exist
-create_table_sql = """
-CREATE TABLE IF NOT EXISTS tickers (
-    ticker VARCHAR(50),
-    name VARCHAR(500),
-    market VARCHAR(50),
-    locale VARCHAR(10),
-    primary_exchange VARCHAR(20),
-    type VARCHAR(20),
-    active BOOLEAN,
-    currency_name VARCHAR(10),
-    cik VARCHAR(20),
-    composite_figi: VARCHAR(20),
-    share_class_figi: VARCHAR(20),
-    last_updated_utc TIMESTAMP_NTZ,
-    ds: DATE,
-    inserted_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-)
-"""
+    batch_data = [(
+        t.get('ticker'), t.get('name'), t.get('market'), t.get('locale'),
+        t.get('primary_exchange'), t.get('type'), t.get('active'),
+        t.get('currency_name'), t.get('cik'), t.get('composite_figi'),
+        t.get('share_class_figi'), t.get('last_updated_utc')
+    ) for t in ticker_data]
 
-cursor.execute(create_table_sql)
-print('Table created or already exists')
+    cursor.executemany(insert_sql, batch_data)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print("Job Complete. Data loaded to Snowflake.")
 
-# Clear existing data (optional - remove if you want to append)
-# cursor.execute("TRUNCATE TABLE tickers")
-
-# Insert tickers into Snowflake
-print(f'Inserting {len(tickers)} tickers into Snowflake...')
-insert_sql = """
-INSERT INTO tickers (ticker, name, market, locale, primary_exchange, type, active, currency_name, cik, last_updated_utc)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-"""
-
-# Prepare data for batch insert
-ticker_data = []
-for ticker in tickers:
-    ticker_data.append((
-        ticker.get('ticker'),
-        ticker.get('name'),
-        ticker.get('market'),
-        ticker.get('locale'),
-        ticker.get('primary_exchange'),
-        ticker.get('type'),
-        ticker.get('active'),
-        ticker.get('currency_name'),
-        ticker.get('cik'),
-        ticker.get('last_updated_utc')
-    ))
-
-# Batch insert for better performance
-cursor.executemany(insert_sql, ticker_data)
-conn.commit()
-print(f'Successfully inserted {len(tickers)} tickers into Snowflake table')
-
-cursor.close()
-conn.close()
-print('Connection closed')
+# THIS IS THE START BUTTON:
+if __name__ == "__main__":
+    run_stock_job()
