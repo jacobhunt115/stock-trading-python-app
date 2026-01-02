@@ -1,0 +1,9 @@
+requests
+openai
+dotenv
+schedule
+snowflake-connector-python
+run_stock_job
+schedule
+time
+datetime
